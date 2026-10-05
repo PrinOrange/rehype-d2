@@ -1,4 +1,4 @@
-# @vahor/rehype-d2
+# @codemetic/rehype-d2
 
 ## 0.0.9
 
