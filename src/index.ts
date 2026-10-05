@@ -13,7 +13,9 @@ type Strategy = (typeof strategies)[number];
 const svggoConfig: SvgoConfig = {};
 
 interface FoundNode {
+	/** The element holding the diagram source, replaced in the tree. */
 	node: Element;
+	/** Its parent, the element the source is spliced out of. */
 	ancestor: Element;
 	value: string;
 }
@@ -46,13 +48,72 @@ function optimizeSvg(svg: string, config: SvgoConfig) {
 	return data;
 }
 
-function isD2Tag(
+type D2Target = NonNullable<RehypeD2Options["target"]>;
+
+/**
+ * Split a hast `className` property into its tokens.
+ *
+ * It is an array when it comes straight from `remark-rehype`, but a single
+ * space separated string once a syntax highlighter has rewritten it, which is
+ * what `@nuxtjs/mdc` does to the `pre` of every code block it highlights.
+ */
+function classNameTokens(className: unknown) {
+	if (Array.isArray(className)) return className.map(String);
+	if (typeof className === "string") return className.split(/\s+/);
+	return [];
+}
+
+/** Whether a node carries the configured language marker. */
+function hasD2Marker(node: Element, target: D2Target) {
+	return classNameTokens(node.properties?.className).includes(target.className);
+}
+
+function isD2Tag(node: Element, target: D2Target) {
+	return node.tagName === target.tagName && hasD2Marker(node, target);
+}
+
+/** The `code` element a `pre` wraps, when that `pre` holds nothing else. */
+function codeChildOf(node: Element) {
+	if (node.tagName !== "pre" || node.children.length !== 1) return undefined;
+	const child = node.children[0];
+	if (child?.type === "element" && child.tagName === "code") return child;
+}
+
+/**
+ * Locate the element holding a D2 block's source, and its parent.
+ *
+ * Pipelines disagree about where the language marker goes:
+ *
+ * - `remark-rehype` tags the `code` element itself:
+ *     `<pre><code class="language-d2">source</code></pre>`
+ * - `@nuxtjs/mdc` (the renderer behind Nuxt Content) tags the `pre` wrapping it
+ *   and leaves the inner `code` without any class at all:
+ *     `<pre language="d2" class="language-d2"><code>source</code></pre>`
+ * - a `target` pointed at `pre` matches the wrapper rather than the `code`.
+ *
+ * The source always ends up in a `code` element, so a match on the wrapper is
+ * resolved one level down to it. That also keeps the annotations
+ * `@nuxtjs/mdc` stores on the `code` (a fenced block's `title="..."` and
+ * friends) readable, since `parseMetadata` looks at the matched node.
+ */
+function resolveD2Source(
 	node: Element,
-	target: NonNullable<RehypeD2Options["target"]>,
-) {
-	if (node.tagName !== target.tagName) return false;
-	if (Array.isArray(node.properties.className)) {
-		return node.properties.className.includes(target.className);
+	parent: Element | undefined,
+	target: D2Target,
+): { node: Element; ancestor: Element } | undefined {
+	if (isD2Tag(node, target)) {
+		const code = codeChildOf(node);
+		// biome-ignore lint/style/noNonNullAssertion: an element is never the root
+		return code ? { node: code, ancestor: node } : { node, ancestor: parent! };
+	}
+	// The `@nuxtjs/mdc` shape: the marker sits on the `pre`, the `code` it wraps
+	// is the one carrying the source.
+	if (
+		node.tagName === "code" &&
+		parent?.tagName === "pre" &&
+		hasD2Marker(parent, target)
+	) {
+		return { node, ancestor: parent };
 	}
 }
 
@@ -254,16 +315,18 @@ const rehypeD2: Plugin<[RehypeD2Options], Root> = (
 		const foundNodes: FoundNode[] = [];
 
 		visitParents(tree, "element", (node, ancestors) => {
-			if (!isD2Tag(node, target) || node.children.length === 0) {
+			const parent = ancestors.at(-1) as Element | undefined;
+			const source = resolveD2Source(node, parent, target);
+			if (!source || source.node.children.length === 0) {
 				return;
 			}
-			if (node.children.length !== 1) {
+			if (source.node.children.length !== 1) {
 				throw new RehypeD2RendererError(
-					`Expected exactly one child element for ${node.tagName} elements, but found ${node.children.length}`,
+					`Expected exactly one child element for ${source.node.tagName} elements, but found ${source.node.children.length}`,
 				);
 			}
 
-			const nodeContent = node.children[0] as { value: string };
+			const nodeContent = source.node.children[0] as { value: string };
 
 			if (valueContainsImports(nodeContent.value) && !cwd) {
 				throw new RehypeD2RendererError(
@@ -271,12 +334,10 @@ const rehypeD2: Plugin<[RehypeD2Options], Root> = (
 				);
 			}
 
-			// biome-ignore lint/style/noNonNullAssertion: Element is not the root so it has a parent
-			const parent = ancestors.at(-1)!;
 			foundNodes.push({
-				node,
+				node: source.node,
 				value: nodeContent.value,
-				ancestor: parent as Element,
+				ancestor: source.ancestor,
 			});
 		});
 

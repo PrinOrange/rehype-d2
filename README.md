@@ -129,6 +129,7 @@ This will generate the following HTML:
 # Integration with other tools
 
 - If you already have a rehype plugin that process code blocks, I suggest placing `rehype-d2` first, so that the code block is unchanged.
+- When using with [Nuxt Content](https://content.nuxt.com) (`@nuxtjs/mdc`), no extra configuration is needed: the language marker is looked for on the `pre` wrapping a code block as well as on the `code` element itself, and both the list and the string form of the `class` attribute are accepted.
 - When using with [contentlayer](https://github.com/timlrx/contentlayer2). You might have to patch the `contentlayer` library to avoid bundling the `d2` library. See [issue](https://github.com/timlrx/contentlayer2/issues/70)
 
 # Acknowledgements

@@ -167,3 +167,22 @@ describe("renders", async () => {
 		}
 	}
 });
+
+describe("nuxt content", () => {
+	// `@nuxtjs/mdc`, the renderer behind Nuxt Content, moves the language marker
+	// onto the `pre` wrapping a code block; `tests/fixtures/nuxt-content.html` is
+	// that shape. Its syntax highlighter then rewrites the `class` attribute from
+	// a list into a single string, which is applied on top of the fixture here.
+	test("renders a block whose class was rewritten by a highlighter", async () => {
+		const processor = rehype().use(rehypeD2, { strategy: "inline-svg" });
+		const tree = processor.parse(
+			await Bun.file("tests/fixtures/nuxt-content.html").text(),
+		);
+		const pre = tree.children[0] as {
+			properties: { className: string | string[] };
+		};
+		pre.properties.className = "language-d2 shiki github-dark";
+
+		expect(processor.stringify(await processor.run(tree))).toMatchSnapshot();
+	});
+});
