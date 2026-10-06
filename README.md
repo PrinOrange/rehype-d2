@@ -28,6 +28,11 @@ const processor = await rehype()
 - `cwd`: The working directory to use for to resolve imports.
    - If not provided, imports won't be available.
 
+- `containerTagName`: The tag to give the container a diagram is rendered into when it replaces the content of a `pre` code block. Default is `div`.
+  - A `pre` left around the diagram is picked up by syntax highlighters running after this plugin, which will highlight the block's text and throw the SVG away. Retagging it avoids that.
+
+- `containerTagProps`: The properties to give that container. Default is `{}`.
+
 - `defaultThemes`: The themes to use if no themes are specified in the metadata. Default is `["default"]`.
 
 - `defaultMetadata`: The options to pass to the D2 renderer. See [D2 Render Options](https://github.com/d2lang/d2/blob/master/d2js/js/index.d.ts)
@@ -129,7 +134,7 @@ This will generate the following HTML:
 # Integration with other tools
 
 - If you already have a rehype plugin that process code blocks, I suggest placing `rehype-d2` first, so that the code block is unchanged.
-- When using with [Nuxt Content](https://content.nuxt.com) (`@nuxtjs/mdc`), no extra configuration is needed: the language marker is looked for on the `pre` wrapping a code block as well as on the `code` element itself, and both the list and the string form of the `class` attribute are accepted.
+- When using with [Nuxt Content](https://content.nuxt.com) (`@nuxtjs/mdc`), no extra configuration is needed: the language marker is looked for on the `pre` wrapping a code block as well as on the `code` element itself, and both the list and the string form of the `class` attribute are accepted. The `pre` is turned into a `div` (`containerTagName`), because that renderer's syntax highlighter rewrites any `pre` carrying a `language` property and would highlight the diagram away. Its renderer also hands property names to the DOM as attributes, so the SVG is emitted with the attribute names it needs (`marker-end` rather than hast's `markerEnd`), which SVG's case sensitivity makes a requirement.
 - When using with [contentlayer](https://github.com/timlrx/contentlayer2). You might have to patch the `contentlayer` library to avoid bundling the `d2` library. See [issue](https://github.com/timlrx/contentlayer2/issues/70)
 
 # Acknowledgements

@@ -1,8 +1,9 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { type CompileOptions, D2 } from "@d2lang/d2";
-import type { Element, ElementContent, Root } from "hast";
+import type { Element, ElementContent, Properties, Root } from "hast";
 import { fromHtml } from "hast-util-from-html";
 import svgToDataURI from "mini-svg-data-uri";
+import { find, svg } from "property-information";
 import { optimize, type Config as SvgoConfig } from "svgo";
 import type { Plugin } from "unified";
 import { visitParents } from "unist-util-visit-parents";
@@ -46,6 +47,40 @@ function validateImports(options: RehypeD2Options, fs: Record<string, string>) {
 function optimizeSvg(svg: string, config: SvgoConfig) {
 	const { data } = optimize(svg, config);
 	return data;
+}
+
+/**
+ * Rename the properties of an SVG subtree to the attribute names they stand
+ * for.
+ *
+ * hast names attributes in camelCase (`marker-end` is stored as `markerEnd`),
+ * which a serializer maps back, but a renderer that forwards those names to the
+ * DOM does not: `@nuxtjs/mdc` turns every property into a prop and Vue sets it
+ * with `setAttribute`, and since SVG is case sensitive, `markerEnd` is ignored
+ * where the renderer looks for `marker-end` — arrowheads disappear, and text
+ * loses its font and anchoring.
+ *
+ * The SVG schema is the only thing that can tell the two flavours of camelCase
+ * apart — `fontFamily` stands for `font-family`, while `viewBox` really is
+ * `viewBox` — so the name is resolved with `property-information` rather than by
+ * hand. Names the schema doesn't know are returned unchanged.
+ */
+function useSvgAttributeNames(node: Element | Root, insideSvg = false) {
+	const inSvg =
+		insideSvg || (node.type === "element" && node.tagName === "svg");
+
+	if (node.type === "element" && inSvg && node.properties) {
+		node.properties = Object.fromEntries(
+			Object.entries(node.properties).map(([name, value]) => [
+				find(svg, name).attribute,
+				value,
+			]),
+		);
+	}
+
+	for (const child of node.children) {
+		if (child.type === "element") useSvgAttributeNames(child, inSvg);
+	}
 }
 
 type D2Target = NonNullable<RehypeD2Options["target"]>;
@@ -258,6 +293,18 @@ export type RehypeD2Options<T extends Themes = Themes> = {
 			  }
 		>
 	>;
+	/**
+	 * The tag to give the container a diagram is rendered into when it replaces
+	 * the content of a `pre` code block. Defaults to `"div"`.
+	 *
+	 * Leaving the `pre` in place is not safe: `@nuxtjs/mdc`'s syntax highlighter
+	 * rewrites any `pre` carrying a `language` property, and since the diagram
+	 * is no longer a `code` element it replaces the whole block — SVG included —
+	 * with highlighted text.
+	 */
+	containerTagName?: string;
+	/** The properties to give that container. Defaults to `{}`. */
+	containerTagProps?: Properties;
 };
 
 export interface NodeMetadata
@@ -289,6 +336,8 @@ const rehypeD2: Plugin<[RehypeD2Options], Root> = (
 		defaultMetadata,
 		globalImports,
 		defaultThemes = ["default"],
+		containerTagName = "div",
+		containerTagProps = {},
 	} = options;
 
 	if (!isValidStrategy(strategy)) {
@@ -397,6 +446,7 @@ const rehypeD2: Plugin<[RehypeD2Options], Root> = (
 						const root = fromHtml(optimizedSvg, {
 							fragment: true,
 						}) as unknown as Root;
+						useSvgAttributeNames(root);
 						// biome-ignore lint/style/noNonNullAssertion: There is a root element
 						const svgElement = root.children![0] as Element;
 						svgElement.properties = {
@@ -426,6 +476,17 @@ const rehypeD2: Plugin<[RehypeD2Options], Root> = (
 				const children = ancestor.children!;
 				const index = children.indexOf(node);
 				children.splice(index, 1, ...elements);
+
+				// A `pre` left around the diagram is mistaken for a code block by
+				// anything running after this plugin: `@nuxtjs/mdc` highlights every
+				// `pre` carrying a `language` property and, finding no `code` to write
+				// into, replaces the diagram with highlighted text. Retag it, and drop
+				// the properties that come with the code block shape (`language`,
+				// `code`, the whole fence source) along with it.
+				if (ancestor.tagName === "pre") {
+					ancestor.tagName = containerTagName;
+					ancestor.properties = { ...containerTagProps };
+				}
 			}),
 		);
 	};

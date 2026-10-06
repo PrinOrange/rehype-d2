@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readdirSync } from "node:fs";
+import type { Element } from "hast";
 import { rehype } from "rehype";
 import rehypeStringify from "rehype-stringify";
 import remarkParse from "remark-parse";
@@ -173,6 +174,7 @@ describe("nuxt content", () => {
 	// onto the `pre` wrapping a code block; `tests/fixtures/nuxt-content.html` is
 	// that shape. Its syntax highlighter then rewrites the `class` attribute from
 	// a list into a single string, which is applied on top of the fixture here.
+	// The render sits close to the default 5s timeout when the whole suite runs.
 	test("renders a block whose class was rewritten by a highlighter", async () => {
 		const processor = rehype().use(rehypeD2, { strategy: "inline-svg" });
 		const tree = processor.parse(
@@ -182,7 +184,24 @@ describe("nuxt content", () => {
 			properties: { className: string | string[] };
 		};
 		pre.properties.className = "language-d2 shiki github-dark";
+		const rendered = await processor.run(tree);
 
-		expect(processor.stringify(await processor.run(tree))).toMatchSnapshot();
-	});
+		expect(processor.stringify(rendered)).toMatchSnapshot();
+		// The same renderer hands property names to the DOM as attributes, and SVG
+		// is case sensitive: `markerEnd` is a name it ignores where the arrowhead is
+		// defined by `marker-end`. `viewBox`, camelCase in SVG itself, stays as is.
+		const names = new Set<string>();
+		const collect = (element: Element) => {
+			for (const name of Object.keys(element.properties ?? {})) names.add(name);
+			for (const child of element.children) {
+				if (child.type === "element") collect(child);
+			}
+		};
+		collect(rendered.children[0] as Element);
+
+		expect([...names]).toContain("marker-end");
+		expect([...names]).toContain("stroke-width");
+		expect([...names]).toContain("viewBox");
+		expect([...names]).not.toContain("markerEnd");
+	}, 30_000);
 });
