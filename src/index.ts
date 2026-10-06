@@ -1,9 +1,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { type CompileOptions, D2 } from "@d2lang/d2";
 import { Resvg } from "@resvg/resvg-js";
-import type { Element, ElementContent, Properties, Root } from "hast";
-import { fromHtml } from "hast-util-from-html";
-import { find, svg } from "property-information";
+import type { Element, Properties, Root } from "hast";
 import { optimize, type Config as SvgoConfig } from "svgo";
 import type { Plugin } from "unified";
 import { visitParents } from "unist-util-visit-parents";
@@ -99,37 +97,27 @@ function svgToPngDataUri(svg: string, scale: number) {
 }
 
 /**
- * Rename the properties of an SVG subtree to the attribute names they stand
- * for.
+ * Put an SVG in a data URI an `img` can hold.
  *
- * hast names attributes in camelCase (`marker-end` is stored as `markerEnd`),
- * which a serializer maps back, but a renderer that forwards those names to the
- * DOM does not: `@nuxtjs/mdc` turns every property into a prop and Vue sets it
- * with `setAttribute`, and since SVG is case sensitive, `markerEnd` is ignored
- * where the renderer looks for `marker-end` — arrowheads disappear, and text
- * loses its font and anchoring.
+ * The diagram goes into the `src` of an `img` rather than into the tree as an
+ * `svg` element. An element in the tree is at the mercy of whatever renders it:
+ * `@nuxtjs/mdc` hands the properties of every element to the DOM as attributes,
+ * and its HTML schema does not know that hast's `markerEnd` stands for
+ * `marker-end`, so the arrowheads and text styling of an inline SVG were lost on
+ * the way to the page. A data URI is opaque to it — nothing between here and the
+ * browser parses the diagram, and the browser parses it as the SVG it is.
  *
- * The SVG schema is the only thing that can tell the two flavours of camelCase
- * apart — `fontFamily` stands for `font-family`, while `viewBox` really is
- * `viewBox` — so the name is resolved with `property-information` rather than by
- * hand. Names the schema doesn't know are returned unchanged.
+ * It is spelled out in base64 rather than percent encoded: base64 has no
+ * character that means anything in a URI, where the SVG is full of them — XML,
+ * quotes, the `#` of the colors and font data D2 embeds.
+ *
+ * Being an SVG document, it is also drawn with the fonts inside it, which are
+ * the ones D2 chose; the `inline-png` raster cannot use them (see
+ * `svgToPngDataUri`) and falls back to the system's.
  */
-function useSvgAttributeNames(node: Element | Root, insideSvg = false) {
-	const inSvg =
-		insideSvg || (node.type === "element" && node.tagName === "svg");
-
-	if (node.type === "element" && inSvg && node.properties) {
-		node.properties = Object.fromEntries(
-			Object.entries(node.properties).map(([name, value]) => [
-				find(svg, name).attribute,
-				value,
-			]),
-		);
-	}
-
-	for (const child of node.children) {
-		if (child.type === "element") useSvgAttributeNames(child, inSvg);
-	}
+function svgToDataUri(svg: string) {
+	const base64 = Buffer.from(svg, "utf8").toString("base64");
+	return `data:image/svg+xml;base64,${base64}`;
 }
 
 type D2Target = NonNullable<RehypeD2Options["target"]>;
@@ -337,6 +325,16 @@ function addDefaultMetadata(
 type Themes = readonly [string, ...string[]];
 
 export type RehypeD2Options<T extends Themes = Themes> = {
+	/**
+	 * What the diagram is inlined as. Either way it is written into an `img`,
+	 * as a data URI in its `src`.
+	 *
+	 * - `"inline-svg"` (the default) writes the SVG D2 rendered, base64 encoded:
+	 *   vector, and drawn with the fonts embedded in the diagram.
+	 * - `"inline-png"` rasterizes that SVG with `@resvg/resvg-js` instead, at
+	 *   `pngScale` pixels per pixel of the drawn size. The raster cannot use the
+	 *   embedded fonts and is drawn with the system's.
+	 */
 	strategy?: Strategy;
 	cwd?: string;
 	target?: {
@@ -529,43 +527,33 @@ const rehypeD2: Plugin<[RehypeD2Options], Root> = (
 							sharedProperties.title = metadata.title as string;
 						}
 
-						let result: ElementContent;
-						if (strategy === "inline-svg") {
-							const root = fromHtml(optimizedSvg, {
-								fragment: true,
-							}) as unknown as Root;
-							useSvgAttributeNames(root);
-							// biome-ignore lint/style/noNonNullAssertion: There is a root element
-							const svgElement = root.children![0] as Element;
-							svgElement.properties = {
-								...svgElement.properties,
+						// The strategies differ in what the `src` holds, not in the
+						// shape of what is written into the document: an `img`, with the
+						// diagram in it as a data URI — vector for one, raster for the
+						// other — and the size of the diagram drawn on the element.
+						const img: Element = {
+							type: "element",
+							tagName: "img",
+							properties: {
 								...sharedProperties,
-								role: "img",
-							};
-							if (metadata.alt) {
-								svgElement.properties["aria-label"] = metadata.alt as string;
-							}
-							result = svgElement;
-						} else {
-							// The density of the raster (see `svgToPngDataUri`). The
-							// element's own size is the drawn size whatever this is, so
-							// raising it sharpens the diagram rather than enlarging it.
-							const pngScale = (metadata.pngScale as number | undefined) ?? 1;
-							const img: Element = {
-								type: "element",
-								tagName: "img",
-								properties: {
-									...sharedProperties,
-									// An `img` has to carry an `alt`; with no description it
-									// is exposed as decorative rather than as the source.
-									alt: (metadata.alt as string | undefined) ?? "",
-									src: svgToPngDataUri(optimizedSvg, pngScale),
-								},
-								children: [],
-							};
-							result = img;
-						}
-						elements.push(result);
+								// An `img` has to carry an `alt`; with no description it
+								// is exposed as decorative rather than as its own source.
+								alt: (metadata.alt as string | undefined) ?? "",
+								src:
+									strategy === "inline-svg"
+										? svgToDataUri(optimizedSvg)
+										: // The density of the raster (see
+											// `svgToPngDataUri`). The element's own size is the
+											// drawn size whatever this is, so raising it
+											// sharpens the diagram rather than enlarging it.
+											svgToPngDataUri(
+												optimizedSvg,
+												(metadata.pngScale as number | undefined) ?? 1,
+											),
+							},
+							children: [],
+						};
+						elements.push(img);
 					}
 
 					// biome-ignore lint/style/noNonNullAssertion: Element is not the root so it has a parent

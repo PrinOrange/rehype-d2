@@ -180,15 +180,22 @@ describe("renders", async () => {
 /**
  * Replace every data URI with a note of what kind it was.
  *
- * A diagram written into a document as a data URI is one long blob — an SVG
- * spelled out, or a raster in base64 — and a snapshot several hundred kilobytes
- * of blob is not one anybody reads. The kind is kept, since that is the part a
- * test is looking at.
+ * A diagram written into a document as a data URI is one long blob, several
+ * hundred kilobytes of base64 for a diagram with fonts in it, and a snapshot
+ * that is one long blob is not one anybody reads. The kind is kept, since that
+ * is the part a test is looking at.
  */
 function redactDataUris(html: string) {
 	return html.replace(
 		/data:image\/([\w+.-]+)[^"]*/g,
 		(_match, kind: string) => `data:image/${kind};[data]`,
+	);
+}
+
+/** What a base64 data URI carries, as text. */
+function decodeDataUri(uri: string) {
+	return Buffer.from(uri.slice(uri.indexOf(",") + 1), "base64").toString(
+		"utf8",
 	);
 }
 
@@ -227,36 +234,37 @@ describe("nuxt content", () => {
 			"language-d2 shiki github-dark";
 		const rendered = await processor.run(tree);
 
-		expect(processor.stringify(rendered)).toMatchSnapshot();
-		// The same renderer hands property names to the DOM as attributes, and SVG
-		// is case sensitive: `markerEnd` is a name it ignores where the arrowhead is
-		// defined by `marker-end`. `viewBox`, camelCase in SVG itself, stays as is.
-		const names = new Set<string>();
-		const collect = (element: Element) => {
-			for (const name of Object.keys(element.properties ?? {})) names.add(name);
-			for (const child of element.children) {
-				if (child.type === "element") collect(child);
-			}
-		};
-		collect(rendered.children[0] as Element);
+		expect(redactDataUris(processor.stringify(rendered))).toMatchSnapshot();
+		// The diagram is not in the tree at all: it is a data URI in the `src` of
+		// an `img`, so no renderer in between ever sees an SVG attribute name to
+		// mangle (`markerEnd` for `marker-end`) and nothing is lost on the way to
+		// the page.
+		const { properties } = findElement(rendered, "img");
+		const svg = decodeDataUri(String(properties.src));
 
-		expect([...names]).toContain("marker-end");
-		expect([...names]).toContain("stroke-width");
-		expect([...names]).toContain("viewBox");
-		expect([...names]).not.toContain("markerEnd");
+		expect(String(properties.src)).toStartWith("data:image/svg+xml;base64,");
+		// The worth of the indirection is that the browser gets the diagram D2
+		// drew, so the payload has to be one: a readable SVG with its `xmlns`
+		// (which an `img` needs and an inline element did not), and the attributes
+		// in the case sensitive spelling SVG defines.
+		expect(svg).toStartWith("<svg");
+		expect(svg).toContain('xmlns="http://www.w3.org/2000/svg"');
+		expect(svg).toContain("marker-end");
+		expect(svg).not.toContain("markerEnd");
 		// The block carries no title or alt, and the source is not a description:
 		// the diagram gets neither rather than a tooltip full of diagram code.
-		expect([...names]).toContain("role");
-		expect([...names]).not.toContain("title");
-		expect([...names]).not.toContain("aria-label");
+		expect(properties.alt).toBe("");
+		expect(Object.keys(properties)).not.toContain("title");
+		expect(Object.keys(properties)).not.toContain("aria-label");
 
 		// D2 hands over a `viewBox` and no dimensions, and an SVG without them has
 		// no intrinsic size — it would be stretched to the full width of the column
 		// however small the diagram is. The size it was drawn at is read back out
 		// of the `viewBox`, and `max-width` is what keeps a diagram wider than the
 		// column from running past it.
-		const { properties } = findElement(rendered, "svg");
-		const [, , drawnWidth, drawnHeight] = String(properties.viewBox)
+		const [, , drawnWidth, drawnHeight] = String(
+			/viewBox="([^"]*)"/.exec(svg)?.[1],
+		)
 			.split(" ")
 			.map(Number);
 		expect(properties.width).toBe(drawnWidth);
@@ -313,10 +321,13 @@ describe("nuxt content", () => {
 
 	test("names a diagram after the annotations a Nuxt Content block carries", async () => {
 		const rendered = await renderAnnotated({ strategy: "inline-svg" });
-		const { properties } = findElement(rendered, "svg");
+		const { properties } = findElement(rendered, "img");
 
-		expect(properties["aria-label"]).toBe("A diagram of a message");
+		// The description is the `alt` of an `img`, not an `aria-label` on an
+		// `svg`: the diagram is an image, and this is how an image is named.
+		expect(properties.alt).toBe("A diagram of a message");
 		expect(properties.title).toBe("Message passing");
+		expect(properties["aria-label"]).toBeUndefined();
 	}, 30_000);
 
 	test("rasterizes a denser png without changing the size it is drawn at", async () => {
