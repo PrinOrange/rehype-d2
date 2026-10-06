@@ -50,6 +50,26 @@ function optimizeSvg(svg: string, config: SvgoConfig) {
 }
 
 /**
+ * Read the size a diagram was drawn at from its `viewBox`.
+ *
+ * D2 gives the `<svg>` it renders a `viewBox` and nothing else, and an SVG
+ * without `width`/`height` has no intrinsic size: a renderer stretches it to
+ * the width of whatever holds it, so a small diagram is blown up to fill the
+ * column and a wide one runs past it. The `viewBox` is the only record of the
+ * size the diagram was drawn at.
+ */
+function viewBoxSize(svg: string) {
+	const matched = /viewBox=["']([^"']*)["']/.exec(svg)?.[1];
+	const [, , width, height] =
+		matched
+			?.trim()
+			.split(/[\s,]+/)
+			.map(Number) ?? [];
+	if (!Number.isFinite(width) || !Number.isFinite(height)) return {};
+	return { width, height };
+}
+
+/**
  * Rename the properties of an SVG subtree to the attribute names they stand
  * for.
  *
@@ -436,9 +456,18 @@ const rehypeD2: Plugin<[RehypeD2Options], Root> = (
 							optimizedSvg = optimizeSvg(svg, svggoConfig);
 						}
 
+						const drawn = viewBoxSize(optimizedSvg);
 						const sharedProperties: Properties = {
-							height: metadata.height as number,
-							width: metadata.width as number,
+							height: (metadata.height as number) ?? drawn.height,
+							width: (metadata.width as number) ?? drawn.width,
+							// A diagram is shown at the size it was drawn at, and the cap
+							// keeps one wider than the column it sits in from running past
+							// it. `height: auto` lets it shrink at its own ratio; an
+							// explicit height is a shape the author asked for and is left
+							// alone.
+							style: metadata.height
+								? "max-width:100%"
+								: "max-width:100%;height:auto",
 							"data-d2-theme": theme,
 						};
 						if (metadata.title) {

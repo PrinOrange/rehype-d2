@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readdirSync } from "node:fs";
-import type { Element } from "hast";
+import type { Element, Root } from "hast";
 import { rehype } from "rehype";
 import rehypeStringify from "rehype-stringify";
 import remarkParse from "remark-parse";
@@ -169,6 +169,26 @@ describe("renders", async () => {
 	}
 });
 
+/**
+ * The first element carrying a tag name, depth first.
+ *
+ * `rehype` parses a fragment into a whole document (`html > head + body`), so
+ * what a test is after is never at the top of the tree.
+ */
+function findElement(root: Root, tagName: string): Element {
+	const search = (element: Element): Element | undefined => {
+		if (element.tagName === tagName) return element;
+		for (const child of element.children) {
+			if (child.type !== "element") continue;
+			const found = search(child);
+			if (found) return found;
+		}
+	};
+	const found = search(root.children[0] as Element);
+	if (!found) throw new Error(`no <${tagName}> in the rendered tree`);
+	return found;
+}
+
 describe("nuxt content", () => {
 	// `@nuxtjs/mdc`, the renderer behind Nuxt Content, moves the language marker
 	// onto the `pre` wrapping a code block; `tests/fixtures/nuxt-content.html` is
@@ -180,10 +200,8 @@ describe("nuxt content", () => {
 		const tree = processor.parse(
 			await Bun.file("tests/fixtures/nuxt-content.html").text(),
 		);
-		const pre = tree.children[0] as {
-			properties: { className: string | string[] };
-		};
-		pre.properties.className = "language-d2 shiki github-dark";
+		findElement(tree, "pre").properties.className =
+			"language-d2 shiki github-dark";
 		const rendered = await processor.run(tree);
 
 		expect(processor.stringify(rendered)).toMatchSnapshot();
@@ -208,5 +226,35 @@ describe("nuxt content", () => {
 		expect([...names]).toContain("role");
 		expect([...names]).not.toContain("title");
 		expect([...names]).not.toContain("aria-label");
+
+		// D2 hands over a `viewBox` and no dimensions, and an SVG without them has
+		// no intrinsic size — it would be stretched to the full width of the column
+		// however small the diagram is. The size it was drawn at is read back out
+		// of the `viewBox`, and `max-width` is what keeps a diagram wider than the
+		// column from running past it.
+		const { properties } = findElement(rendered, "svg");
+		const [, , drawnWidth, drawnHeight] = String(properties.viewBox)
+			.split(" ")
+			.map(Number);
+		expect(properties.width).toBe(drawnWidth);
+		expect(properties.height).toBe(drawnHeight);
+		expect(properties.style).toBe("max-width:100%;height:auto");
+	}, 30_000);
+
+	test("gives an image the size of the diagram it holds", async () => {
+		// The same holds for `inline-png`: an SVG in a data URI whose root carries
+		// only a `viewBox` gives the `img` no size to fall back on either.
+		const processor = rehype().use(rehypeD2, { strategy: "inline-png" });
+		const rendered = await processor.run(
+			processor.parse(
+				await Bun.file("tests/fixtures/nuxt-content.html").text(),
+			),
+		);
+		const { properties } = findElement(rendered, "img");
+
+		expect(properties.width).toBeGreaterThan(0);
+		expect(properties.height).toBeGreaterThan(0);
+		expect(properties.style).toBe("max-width:100%;height:auto");
+		expect(String(properties.src)).toStartWith("data:image/svg+xml,");
 	}, 30_000);
 });

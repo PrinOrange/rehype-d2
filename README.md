@@ -88,6 +88,8 @@ When using `inline-png`:
 
 `title` and `alt` are written out only when you provide them, as metadata or as props; nothing is filled in for you. A block with neither gets a `role="img"` SVG without an `aria-label`, and an image with an empty `alt`.
 
+A diagram keeps the size it was drawn at, capped at the width of whatever holds it. D2 gives its SVG a `viewBox` and no dimensions, and an SVG without them has no intrinsic size — a renderer stretches it to the full width of its container however small the diagram is — so the size is read back out of the `viewBox` and written on the element, together with `style="max-width:100%;height:auto"`. A small diagram stays small, a wide one scales down instead of overflowing, and `width`/`height` given as props or metadata override the drawn size (an explicit `height` is left as it is, and only a diagram without one gets `height: auto`).
+
 See other examples in the fixtures directory [`tests/fixtures`](https://github.com/PrinOrange/rehype-d2/tree/main/tests/fixtures) and [`tests/output`](https://github.com/PrinOrange/rehype-d2/tree/main/tests/output) to see the generated HTML.
 
 ## Light and dark themes
