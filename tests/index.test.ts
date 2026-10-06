@@ -199,6 +199,11 @@ function decodeDataUri(uri: string) {
 	);
 }
 
+/** The opening tag of the SVG a data URI carries, where its own size goes. */
+function svgRootTag(svg: string) {
+	return svg.slice(0, svg.indexOf(">") + 1);
+}
+
 /**
  * The first element carrying a tag name, depth first.
  *
@@ -270,6 +275,33 @@ describe("nuxt content", () => {
 		expect(properties.width).toBe(drawnWidth);
 		expect(properties.height).toBe(drawnHeight);
 		expect(properties.style).toBe("max-width:100%;height:auto");
+		// The element's size is a hint a stylesheet can override — a `width:
+		// fit-content` on an image with no intrinsic size fills the column — and a
+		// viewer showing the image by itself never sees the element at all. So the
+		// diagram states the size in itself too, and every renderer of it has one
+		// to lay it out by.
+		expect(svgRootTag(svg)).toContain(`width="${drawnWidth}"`);
+		expect(svgRootTag(svg)).toContain(`height="${drawnHeight}"`);
+	}, 30_000);
+
+	test("keeps a diagram at the size it was drawn at when it is shown at another", async () => {
+		// `width` and `height` are how large the diagram is shown, and they size the
+		// element; the diagram's own size is the one it was drawn at, and stays that
+		// wherever the image is rendered without the element around it.
+		const processor = rehype().use(rehypeD2, { strategy: "inline-svg" });
+		const tree = processor.parse(
+			await Bun.file("tests/fixtures/nuxt-content.html").text(),
+		);
+		findElement(tree, "pre").properties.meta = 'width="400"';
+		const { properties } = findElement(await processor.run(tree), "img");
+		const svg = decodeDataUri(String(properties.src));
+		const [, , drawnWidth] = String(/viewBox="([^"]*)"/.exec(svg)?.[1])
+			.split(" ")
+			.map(Number);
+
+		expect(properties.width).toBe(400);
+		expect(drawnWidth).not.toBe(400);
+		expect(svgRootTag(svg)).toContain(`width="${drawnWidth}"`);
 	}, 30_000);
 
 	test("gives an image the size of the diagram it holds", async () => {

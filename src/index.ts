@@ -68,6 +68,38 @@ function viewBoxSize(svg: string) {
 }
 
 /**
+ * Give a diagram the size it was drawn at, in the diagram itself.
+ *
+ * A `viewBox` with no `width`/`height` beside it is what an SVG inlined into a
+ * page wants — it takes the room it is given — and the last thing an SVG loaded
+ * as an image can use: with no intrinsic size there is nothing to lay it out
+ * by, so a renderer fills its container with it. The diagram then stretches to
+ * the whole column instead of keeping the size it was drawn at, however small
+ * it is, and anything that scales an image its own way — a `max-width`, a
+ * zoomable viewer — has no size to scale from and shows it stretched.
+ *
+ * The element the diagram is written onto carries the size too, but that one is
+ * a hint a stylesheet can override, and a viewer showing the image alone never
+ * sees it at all. What the diagram says about itself is what every renderer
+ * agrees on.
+ */
+function withDrawnSize(svg: string, size: { width?: number; height?: number }) {
+	const rootTag = /<svg\b[^>]*>/.exec(svg)?.[0];
+	if (!rootTag || size.width === undefined || size.height === undefined) {
+		return svg;
+	}
+	// A diagram that already states a size of its own was drawn with one in mind.
+	if (/(^|\s)(width|height)=/i.test(rootTag)) return svg;
+	return svg.replace(
+		rootTag,
+		rootTag.replace(
+			/^<svg\b/,
+			`<svg width="${size.width}" height="${size.height}"`,
+		),
+	);
+}
+
+/**
  * Rasterize an SVG into a PNG data URI.
  *
  * The name `inline-png` is the one `rehype-mermaid` uses, and there the
@@ -530,7 +562,10 @@ const rehypeD2: Plugin<[RehypeD2Options], Root> = (
 						// The strategies differ in what the `src` holds, not in the
 						// shape of what is written into the document: an `img`, with the
 						// diagram in it as a data URI — vector for one, raster for the
-						// other — and the size of the diagram drawn on the element.
+						// other — and the size of the diagram drawn on the element. The
+						// vector also carries that size itself (see `withDrawnSize`),
+						// since the element's copy is only a hint to a stylesheet that
+						// renders it; a raster states its size in its own pixels.
 						const img: Element = {
 							type: "element",
 							tagName: "img",
@@ -541,7 +576,7 @@ const rehypeD2: Plugin<[RehypeD2Options], Root> = (
 								alt: (metadata.alt as string | undefined) ?? "",
 								src:
 									strategy === "inline-svg"
-										? svgToDataUri(optimizedSvg)
+										? svgToDataUri(withDrawnSize(optimizedSvg, drawn))
 										: // The density of the raster (see
 											// `svgToPngDataUri`). The element's own size is the
 											// drawn size whatever this is, so raising it
