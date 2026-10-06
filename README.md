@@ -86,6 +86,8 @@ When using `inline-png`:
 <img src="data:image/svg+xml,..." alt="This is a description" title="This is a diagram" width="200" height="100">
 ```
 
+`title` and `alt` are written out only when you provide them, as metadata or as props; nothing is filled in for you. A block with neither gets a `role="img"` SVG without an `aria-label`, and an image with an empty `alt`.
+
 See other examples in the fixtures directory [`tests/fixtures`](https://github.com/PrinOrange/rehype-d2/tree/main/tests/fixtures) and [`tests/output`](https://github.com/PrinOrange/rehype-d2/tree/main/tests/output) to see the generated HTML.
 
 ## Light and dark themes

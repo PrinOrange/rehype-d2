@@ -203,5 +203,10 @@ describe("nuxt content", () => {
 		expect([...names]).toContain("stroke-width");
 		expect([...names]).toContain("viewBox");
 		expect([...names]).not.toContain("markerEnd");
+		// The block carries no title or alt, and the source is not a description:
+		// the diagram gets neither rather than a tooltip full of diagram code.
+		expect([...names]).toContain("role");
+		expect([...names]).not.toContain("title");
+		expect([...names]).not.toContain("aria-label");
 	}, 30_000);
 });

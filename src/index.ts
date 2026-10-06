@@ -208,10 +208,11 @@ function autoCastValue(value: unknown) {
 	return value;
 }
 
-function parseMetadata(node: Element, value: string) {
+function parseMetadata(node: Element) {
+	// `title` and `alt` are deliberately absent: they are the diagram's
+	// accessible name and its tooltip, and the only thing this plugin could fall
+	// back to is the diagram's source, which belongs in neither.
 	const metadata: Record<string, unknown> = {
-		title: value.trim(),
-		alt: value.trim(),
 		noXMLTag: true,
 		center: true,
 		pad: 0,
@@ -295,7 +296,7 @@ export type RehypeD2Options<T extends Themes = Themes> = {
 	>;
 	/**
 	 * The tag to give the container a diagram is rendered into when it replaces
-	 * the content of a `pre` code block. Defaults to `"div"`.
+	 * the content of a `pre` code block. Defaults to `"p"`.
 	 *
 	 * Leaving the `pre` in place is not safe: `@nuxtjs/mdc`'s syntax highlighter
 	 * rewrites any `pre` carrying a `language` property, and since the diagram
@@ -393,99 +394,112 @@ const rehypeD2: Plugin<[RehypeD2Options], Root> = (
 		await Promise.all(
 			foundNodes.map(async ({ node, value, ancestor }) => {
 				const d2 = new D2();
-				const baseMetadata = parseMetadata(node, value);
-				if (!baseMetadata.themes) {
-					baseMetadata.themes = defaultThemes;
-					if (defaultThemes.length === 0) {
-						throw new RehypeD2RendererError(
-							"Missing themes in metadata and no defaultThemes found",
-						);
-					}
-				}
-
-				const metadataThemes = new Set(baseMetadata.themes as string[]);
-				const elements: Element[] = [];
-
-				for (const theme of metadataThemes) {
-					const headers = buildHeaders(options, theme, fs);
-					const metadata = JSON.parse(JSON.stringify(baseMetadata));
-					addDefaultMetadata(metadata, value, theme, defaultMetadata);
-
-					// Add theme to metadata salt so the diagram ID is unique
-					metadata.salt = theme;
-
-					const codeToProcess = `${headers}${value}`;
-					const render = await d2.compile({
-						fs: {
-							...fs,
-							index: codeToProcess,
-						},
-						options: metadata,
-					});
-
-					const svg = await d2.render(render.diagram, render.renderOptions);
-					if (typeof svg !== "string") {
-						throw new RehypeD2RendererError(
-							`Failed to render svg diagram for ${value}`,
-						);
-					}
-					let optimizedSvg: string = svg;
-					if (metadata.optimize) {
-						optimizedSvg = optimizeSvg(svg, svggoConfig);
+				try {
+					const baseMetadata = parseMetadata(node);
+					if (!baseMetadata.themes) {
+						baseMetadata.themes = defaultThemes;
+						if (defaultThemes.length === 0) {
+							throw new RehypeD2RendererError(
+								"Missing themes in metadata and no defaultThemes found",
+							);
+						}
 					}
 
-					const sharedProperties = {
-						height: metadata.height as number,
-						width: metadata.width as number,
-						"data-d2-theme": theme,
-						title: metadata.title as string,
-					};
+					const metadataThemes = new Set(baseMetadata.themes as string[]);
+					const elements: Element[] = [];
 
-					let result: ElementContent;
-					if (strategy === "inline-svg") {
-						const root = fromHtml(optimizedSvg, {
-							fragment: true,
-						}) as unknown as Root;
-						useSvgAttributeNames(root);
-						// biome-ignore lint/style/noNonNullAssertion: There is a root element
-						const svgElement = root.children![0] as Element;
-						svgElement.properties = {
-							...svgElement.properties,
-							...sharedProperties,
-							role: "img",
-							"aria-label": metadata.alt as string,
-						};
-						result = svgElement;
-					} else {
-						const img: Element = {
-							type: "element",
-							tagName: "img",
-							properties: {
-								...sharedProperties,
-								alt: metadata.alt as string,
-								src: svgToDataURI(optimizedSvg),
+					for (const theme of metadataThemes) {
+						const headers = buildHeaders(options, theme, fs);
+						const metadata = JSON.parse(JSON.stringify(baseMetadata));
+						addDefaultMetadata(metadata, value, theme, defaultMetadata);
+
+						// Add theme to metadata salt so the diagram ID is unique
+						metadata.salt = theme;
+
+						const codeToProcess = `${headers}${value}`;
+						const render = await d2.compile({
+							fs: {
+								...fs,
+								index: codeToProcess,
 							},
-							children: [],
+							options: metadata,
+						});
+
+						const svg = await d2.render(render.diagram, render.renderOptions);
+						if (typeof svg !== "string") {
+							throw new RehypeD2RendererError(
+								`Failed to render svg diagram for ${value}`,
+							);
+						}
+						let optimizedSvg: string = svg;
+						if (metadata.optimize) {
+							optimizedSvg = optimizeSvg(svg, svggoConfig);
+						}
+
+						const sharedProperties: Properties = {
+							height: metadata.height as number,
+							width: metadata.width as number,
+							"data-d2-theme": theme,
 						};
-						result = img;
+						if (metadata.title) {
+							sharedProperties.title = metadata.title as string;
+						}
+
+						let result: ElementContent;
+						if (strategy === "inline-svg") {
+							const root = fromHtml(optimizedSvg, {
+								fragment: true,
+							}) as unknown as Root;
+							useSvgAttributeNames(root);
+							// biome-ignore lint/style/noNonNullAssertion: There is a root element
+							const svgElement = root.children![0] as Element;
+							svgElement.properties = {
+								...svgElement.properties,
+								...sharedProperties,
+								role: "img",
+							};
+							if (metadata.alt) {
+								svgElement.properties["aria-label"] = metadata.alt as string;
+							}
+							result = svgElement;
+						} else {
+							const img: Element = {
+								type: "element",
+								tagName: "img",
+								properties: {
+									...sharedProperties,
+									// An `img` has to carry an `alt`; with no description it
+									// is exposed as decorative rather than as the source.
+									alt: (metadata.alt as string | undefined) ?? "",
+									src: svgToDataURI(optimizedSvg),
+								},
+								children: [],
+							};
+							result = img;
+						}
+						elements.push(result);
 					}
-					elements.push(result);
-				}
 
-				// biome-ignore lint/style/noNonNullAssertion: Element is not the root so it has a parent
-				const children = ancestor.children!;
-				const index = children.indexOf(node);
-				children.splice(index, 1, ...elements);
+					// biome-ignore lint/style/noNonNullAssertion: Element is not the root so it has a parent
+					const children = ancestor.children!;
+					const index = children.indexOf(node);
+					children.splice(index, 1, ...elements);
 
-				// A `pre` left around the diagram is mistaken for a code block by
-				// anything running after this plugin: `@nuxtjs/mdc` highlights every
-				// `pre` carrying a `language` property and, finding no `code` to write
-				// into, replaces the diagram with highlighted text. Retag it, and drop
-				// the properties that come with the code block shape (`language`,
-				// `code`, the whole fence source) along with it.
-				if (ancestor.tagName === "pre") {
-					ancestor.tagName = containerTagName;
-					ancestor.properties = { ...containerTagProps };
+					// A `pre` left around the diagram is mistaken for a code block by
+					// anything running after this plugin: `@nuxtjs/mdc` highlights every
+					// `pre` carrying a `language` property and, finding no `code` to write
+					// into, replaces the diagram with highlighted text. Retag it, and drop
+					// the properties that come with the code block shape (`language`,
+					// `code`, the whole fence source) along with it.
+					if (ancestor.tagName === "pre") {
+						ancestor.tagName = containerTagName;
+						ancestor.properties = { ...containerTagProps };
+					}
+				} finally {
+					// `@d2lang/d2` compiles in a worker thread on Node, and that thread
+					// holds the process open until it is terminated: a script that
+					// renders diagrams and then ends — a build step, say — never exits.
+					await d2.dispose();
 				}
 			}),
 		);
