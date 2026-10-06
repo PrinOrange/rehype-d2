@@ -99,7 +99,7 @@ describe("renders", async () => {
 		fixtureContent: string;
 	}) => {
 		const result = await processor.process(fixtureContent);
-		expect(result.value).toMatchSnapshot();
+		expect(redactDataUris(result.value)).toMatchSnapshot();
 		if (process.env.CI !== "true") {
 			Bun.write(`tests/output/${outputFileName}`, result.value);
 		}
@@ -124,7 +124,12 @@ describe("renders", async () => {
 						fixtureContent,
 					});
 				});
-				test("renders to inline-png (markdown)", async () => {
+				// Rasterizing reads the system fonts for every diagram, about a
+				// second each, which a fixture with several diagrams pushes past
+				// bun's five second default.
+				test("renders to inline-png (markdown)", {
+					timeout: 30_000,
+				}, async () => {
 					const processor = unified()
 						.use(remarkParse)
 						.use(remarkRehype)
@@ -153,7 +158,10 @@ describe("renders", async () => {
 						fixtureContent,
 					});
 				});
-				test("renders to inline-png (html)", async () => {
+				// See the note on the markdown case above.
+				test("renders to inline-png (html)", {
+					timeout: 30_000,
+				}, async () => {
 					const processor = rehype().use(rehypeD2, {
 						...options,
 						strategy: "inline-png",
@@ -168,6 +176,21 @@ describe("renders", async () => {
 		}
 	}
 });
+
+/**
+ * Replace every data URI with a note of what kind it was.
+ *
+ * A diagram written into a document as a data URI is one long blob — an SVG
+ * spelled out, or a raster in base64 — and a snapshot several hundred kilobytes
+ * of blob is not one anybody reads. The kind is kept, since that is the part a
+ * test is looking at.
+ */
+function redactDataUris(html: string) {
+	return html.replace(
+		/data:image\/([\w+.-]+)[^"]*/g,
+		(_match, kind: string) => `data:image/${kind};[data]`,
+	);
+}
 
 /**
  * The first element carrying a tag name, depth first.
@@ -255,6 +278,68 @@ describe("nuxt content", () => {
 		expect(properties.width).toBeGreaterThan(0);
 		expect(properties.height).toBeGreaterThan(0);
 		expect(properties.style).toBe("max-width:100%;height:auto");
-		expect(String(properties.src)).toStartWith("data:image/svg+xml,");
+		// The strategy is named for what it puts in the `src`, and what it puts
+		// there is a raster: a PNG begins with a fixed signature, which base64
+		// spells as this.
+		expect(String(properties.src)).toStartWith(
+			"data:image/png;base64,iVBORw0KGgo",
+		);
+	}, 30_000);
+
+	/**
+	 * The Nuxt Content fixture, annotated the way a fence is.
+	 *
+	 * `@nuxtjs/mdc` keeps what a fence was written with — `alt="…"` and friends —
+	 * in a `meta` property on the `pre` wrapping the block, and gives the `code`
+	 * inside it no attributes at all.
+	 */
+	async function renderAnnotated(options: RehypeD2Options) {
+		const processor = rehype().use(rehypeD2, options);
+		const tree = processor.parse(
+			await Bun.file("tests/fixtures/nuxt-content.html").text(),
+		);
+		findElement(tree, "pre").properties.meta =
+			'alt="A diagram of a message" title="Message passing"';
+		return processor.run(tree);
+	}
+
+	test("reads the annotations a Nuxt Content block carries", async () => {
+		const rendered = await renderAnnotated({ strategy: "inline-png" });
+		const { properties } = findElement(rendered, "img");
+
+		expect(properties.alt).toBe("A diagram of a message");
+		expect(properties.title).toBe("Message passing");
+	}, 30_000);
+
+	test("names a diagram after the annotations a Nuxt Content block carries", async () => {
+		const rendered = await renderAnnotated({ strategy: "inline-svg" });
+		const { properties } = findElement(rendered, "svg");
+
+		expect(properties["aria-label"]).toBe("A diagram of a message");
+		expect(properties.title).toBe("Message passing");
+	}, 30_000);
+
+	test("rasterizes a denser png without changing the size it is drawn at", async () => {
+		// `pngScale` is for the display the diagram is read on, not for the page
+		// it is written into: a denser raster is sharper, and the element keeps
+		// the drawn size so it takes up the same room either way.
+		const render = async (pngScale: number) => {
+			const processor = rehype().use(rehypeD2, {
+				strategy: "inline-png",
+				defaultMetadata: { default: { pngScale } },
+			});
+			const rendered = await processor.run(
+				processor.parse('<code class="language-d2">a -> b</code>'),
+			);
+			return findElement(rendered, "img").properties;
+		};
+		const single = await render(1);
+		const double = await render(2);
+
+		expect(double.width).toBe(single.width);
+		expect(double.height).toBe(single.height);
+		expect(String(double.src).length).toBeGreaterThan(
+			String(single.src).length,
+		);
 	}, 30_000);
 });

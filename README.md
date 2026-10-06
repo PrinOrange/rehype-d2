@@ -23,13 +23,14 @@ const processor = await rehype()
 
 - `strategy`: The strategy to use for rendering the diagrams.
   - `'inline-svg'`: Replace the diagram with an inline SVG. This is the default. *Recommended*.
-  - `'inline-png'`: Replace the diagram with an inline PNG, the image source will be a data URI of the svg.
+  - `'inline-png'`: Replace the diagram with an inline PNG, the image source will be a `data:image/png;base64` URI. The SVG D2 renders is rasterized with [`@resvg/resvg-js`](https://github.com/thx/resvg-js), in process, at the size the diagram was drawn at — the fonts come along, since D2 writes the ones a diagram uses into the SVG. `pngScale` makes that raster denser.
 
 - `cwd`: The working directory to use for to resolve imports.
    - If not provided, imports won't be available.
 
-- `containerTagName`: The tag to give the container a diagram is rendered into when it replaces the content of a `pre` code block. Default is `div`.
+- `containerTagName`: The tag to give the container a diagram is rendered into when it replaces the content of a `pre` code block. Default is `p`.
   - A `pre` left around the diagram is picked up by syntax highlighters running after this plugin, which will highlight the block's text and throw the SVG away. Retagging it avoids that.
+  - The tag has to be one that can hold what replaces the block — a `p` holds an `img` or an `svg`, but not a `figure`.
 
 - `containerTagProps`: The properties to give that container. Default is `{}`.
 
@@ -83,12 +84,16 @@ When using `inline-svg`:
 
 When using `inline-png`:
 ```html
-<img src="data:image/svg+xml,..." alt="This is a description" title="This is a diagram" width="200" height="100">
+<img src="data:image/png;base64,..." alt="This is a description" title="This is a diagram" width="200" height="100">
 ```
 
 `title` and `alt` are written out only when you provide them, as metadata or as props; nothing is filled in for you. A block with neither gets a `role="img"` SVG without an `aria-label`, and an image with an empty `alt`.
 
+The block is replaced by that element alone: an `img` or an `svg`, with the container tag of `containerTagName` around it and nothing else. No `figure` and no `figcaption` are generated — a caption belongs to the page's own rendering of the image, which is where `alt` and `title` end up, and generating one here would show it twice.
+
 A diagram keeps the size it was drawn at, capped at the width of whatever holds it. D2 gives its SVG a `viewBox` and no dimensions, and an SVG without them has no intrinsic size — a renderer stretches it to the full width of its container however small the diagram is — so the size is read back out of the `viewBox` and written on the element, together with `style="max-width:100%;height:auto"`. A small diagram stays small, a wide one scales down instead of overflowing, and `width`/`height` given as props or metadata override the drawn size (an explicit `height` is left as it is, and only a diagram without one gets `height: auto`).
+
+The raster `inline-png` makes is the drawn size as well, and `pngScale` is for the display it will be read on rather than the page it is written into: `pngScale=2` rasterizes two pixels per drawn pixel, which is what keeps the text in a diagram sharp on a display that draws that many. The element's own `width` and `height` do not change, so a denser raster sharpens the diagram without giving it more room.
 
 See other examples in the fixtures directory [`tests/fixtures`](https://github.com/PrinOrange/rehype-d2/tree/main/tests/fixtures) and [`tests/output`](https://github.com/PrinOrange/rehype-d2/tree/main/tests/output) to see the generated HTML.
 
@@ -138,7 +143,7 @@ This will generate the following HTML:
 # Integration with other tools
 
 - If you already have a rehype plugin that process code blocks, I suggest placing `rehype-d2` first, so that the code block is unchanged.
-- When using with [Nuxt Content](https://content.nuxt.com) (`@nuxtjs/mdc`), no extra configuration is needed: the language marker is looked for on the `pre` wrapping a code block as well as on the `code` element itself, and both the list and the string form of the `class` attribute are accepted. The `pre` is turned into a `div` (`containerTagName`), because that renderer's syntax highlighter rewrites any `pre` carrying a `language` property and would highlight the diagram away. Its renderer also hands property names to the DOM as attributes, so the SVG is emitted with the attribute names it needs (`marker-end` rather than hast's `markerEnd`), which SVG's case sensitivity makes a requirement.
+- When using with [Nuxt Content](https://content.nuxt.com) (`@nuxtjs/mdc`), no extra configuration is needed: the language marker is looked for on the `pre` wrapping a code block as well as on the `code` element itself, and both the list and the string form of the `class` attribute are accepted. The `pre` is turned into a `p` (`containerTagName`), because that renderer's syntax highlighter rewrites any `pre` carrying a `language` property and would highlight the diagram away. What a fence was annotated with — `title="…"`, `alt="…"` — is read from wherever that renderer kept it, a `meta` property on the `pre` beside the language marker. Its renderer also hands property names to the DOM as attributes, so the SVG is emitted with the attribute names it needs (`marker-end` rather than hast's `markerEnd`), which SVG's case sensitivity makes a requirement.
 - When using with [contentlayer](https://github.com/timlrx/contentlayer2). You might have to patch the `contentlayer` library to avoid bundling the `d2` library. See [issue](https://github.com/timlrx/contentlayer2/issues/70)
 
 # Acknowledgements

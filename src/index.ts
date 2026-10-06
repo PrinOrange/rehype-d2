@@ -1,8 +1,8 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { type CompileOptions, D2 } from "@d2lang/d2";
+import { Resvg } from "@resvg/resvg-js";
 import type { Element, ElementContent, Properties, Root } from "hast";
 import { fromHtml } from "hast-util-from-html";
-import svgToDataURI from "mini-svg-data-uri";
 import { find, svg } from "property-information";
 import { optimize, type Config as SvgoConfig } from "svgo";
 import type { Plugin } from "unified";
@@ -67,6 +67,35 @@ function viewBoxSize(svg: string) {
 			.map(Number) ?? [];
 	if (!Number.isFinite(width) || !Number.isFinite(height)) return {};
 	return { width, height };
+}
+
+/**
+ * Rasterize an SVG into a PNG data URI.
+ *
+ * The name `inline-png` is the one `rehype-mermaid` uses, and there the
+ * rasterizing is done by a browser it drives; there is no browser here, so the
+ * raster has to be produced from the SVG some other way. `@resvg/resvg-js` does
+ * it in process — no browser, no network — and the fonts come along: D2 writes
+ * the ones a diagram uses into the SVG as embedded `@font-face` data.
+ *
+ * The raster is made at the size the diagram was drawn at, and `pngScale` is
+ * for the display the diagram will be read on rather than the page it is
+ * written into: a raster of a diagram is mostly text, which looks soft at 1x on
+ * anything but a 1x screen. The element keeps the drawn size in its `width` and
+ * `height` either way, so asking for a denser raster sharpens the diagram
+ * without changing how much room it takes up.
+ */
+function svgToPngDataUri(svg: string, scale: number) {
+	const resvg = new Resvg(svg, {
+		fitTo:
+			scale === 1
+				? // The SVG is drawn at one size and has no other; `original` is
+					// that size rather than a guess at a width to fit.
+					{ mode: "original" }
+				: { mode: "zoom", value: scale },
+	});
+	const png = resvg.render().asPng();
+	return `data:image/png;base64,${png.toString("base64")}`;
 }
 
 /**
@@ -228,7 +257,21 @@ function autoCastValue(value: unknown) {
 	return value;
 }
 
-function parseMetadata(node: Element) {
+/**
+ * Read the annotations a block was given, e.g. `title="Diagram title"`.
+ *
+ * A pipeline hands the attribute string over in one of two ways, and both are
+ * read:
+ *
+ * - `remark-rehype` keeps it on the `code` element it makes the source into, as
+ *   `data.meta`:
+ *     `<code class="language-d2" data.meta="title=&quot;…&quot;">`
+ * - `@nuxtjs/mdc`, the renderer behind Nuxt Content, keeps it in a `meta`
+ *   property on the `pre` wrapping the block, next to the `language` marker,
+ *   and gives the `code` inside it no attributes at all:
+ *     `<pre language="d2" class="language-d2" meta="title=&quot;…&quot;">`
+ */
+function parseMetadata(node: Element, block?: Element) {
 	// `title` and `alt` are deliberately absent: they are the diagram's
 	// accessible name and its tooltip, and the only thing this plugin could fall
 	// back to is the diagram's source, which belongs in neither.
@@ -239,13 +282,18 @@ function parseMetadata(node: Element) {
 		optimize: true,
 	};
 
-	const data = node.data as unknown as { meta: string };
-	if (data?.meta) {
-		// When using markdown, metadata are stored in data.meta using the syntax `key="value"`, e.g. `width="200" title="Diagram title"` (note the quotes)
+	const data = node.data as unknown as { meta?: string };
+	const annotations = [data?.meta, block?.properties?.meta].filter(
+		(meta): meta is string => typeof meta === "string" && meta.length > 0,
+	);
+	for (const annotation of annotations) {
+		// The syntax is `key="value"` (note the quotes), e.g.
+		// `width="200" title="Diagram title"`, and a value that needs no quotes
+		// is read without them.
 		const pattern = /([^=\s]+)=(?:"([^"]*)"|([^\s]*))/g;
 		let match: RegExpMatchArray | null;
 		while (true) {
-			match = pattern.exec(data.meta);
+			match = pattern.exec(annotation);
 			if (!match) break;
 			const key = match[1];
 			const value = match[2] !== undefined ? match[2] : match[3];
@@ -335,6 +383,13 @@ export interface NodeMetadata
 	width?: string;
 	height?: string;
 	optimize?: boolean;
+	/**
+	 * How many raster pixels the `inline-png` strategy gets per pixel of the
+	 * diagram's own size. Defaults to `1`; `2` keeps a diagram sharp on a
+	 * display that draws two pixels per CSS pixel. The strategy is the only one
+	 * with a raster to sharpen.
+	 */
+	pngScale?: number;
 }
 
 export class RehypeD2RendererError extends Error {
@@ -415,7 +470,7 @@ const rehypeD2: Plugin<[RehypeD2Options], Root> = (
 			foundNodes.map(async ({ node, value, ancestor }) => {
 				const d2 = new D2();
 				try {
-					const baseMetadata = parseMetadata(node);
+					const baseMetadata = parseMetadata(node, ancestor);
 					if (!baseMetadata.themes) {
 						baseMetadata.themes = defaultThemes;
 						if (defaultThemes.length === 0) {
@@ -492,6 +547,10 @@ const rehypeD2: Plugin<[RehypeD2Options], Root> = (
 							}
 							result = svgElement;
 						} else {
+							// The density of the raster (see `svgToPngDataUri`). The
+							// element's own size is the drawn size whatever this is, so
+							// raising it sharpens the diagram rather than enlarging it.
+							const pngScale = (metadata.pngScale as number | undefined) ?? 1;
 							const img: Element = {
 								type: "element",
 								tagName: "img",
@@ -500,7 +559,7 @@ const rehypeD2: Plugin<[RehypeD2Options], Root> = (
 									// An `img` has to carry an `alt`; with no description it
 									// is exposed as decorative rather than as the source.
 									alt: (metadata.alt as string | undefined) ?? "",
-									src: svgToDataURI(optimizedSvg),
+									src: svgToPngDataUri(optimizedSvg, pngScale),
 								},
 								children: [],
 							};
