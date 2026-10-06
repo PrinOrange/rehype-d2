@@ -337,7 +337,7 @@ const rehypeD2: Plugin<[RehypeD2Options], Root> = (
 		defaultMetadata,
 		globalImports,
 		defaultThemes = ["default"],
-		containerTagName = "div",
+		containerTagName = "p",
 		containerTagProps = {},
 	} = options;
 
